@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PayVault</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<style>
+  html,body{margin:0;background:#08090c;font-family:'Plus Jakarta Sans',system-ui,sans-serif;}
+  #bgcanvas{position:fixed;inset:0;z-index:0;pointer-events:none;}
+  #app{position:relative;z-index:1;}
+  ::-webkit-scrollbar{width:6px;}
+  ::-webkit-scrollbar-thumb{background:#27272a;border-radius:999px;}
+  select{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2371717a'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;background-size:18px;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .fade-up{animation:fadeUp .35s ease-out;}
+  .spin{animation:spin 0.9s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body class="text-zinc-100">
+<canvas id="bgcanvas"></canvas>
+<div class="min-h-screen">
+  <div class="max-w-md mx-auto px-5 pt-10 pb-24" id="app"></div>
+</div>
+
+<script>
+// ---------------- Three.js ambient background ----------------
+(function(){
+  const canvas = document.getElementById('bgcanvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.z = 9;
+
+  // Drifting particle field
+  const particleCount = 260;
+  const positions = new Float32Array(particleCount * 3);
+  for (let i = 0; i < particleCount; i++) {
+    positions[i*3] = (Math.random() - 0.5) * 22;
+    positions[i*3+1] = (Math.random() - 0.5) * 22;
+    positions[i*3+2] = (Math.random() - 0.5) * 12;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({ color: 0x2dd4bf, size: 0.045, transparent: true, opacity: 0.55 });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  // Soft wireframe icosahedron centerpiece
+  const icoGeo = new THREE.IcosahedronGeometry(3.2, 1);
+  const icoMat = new THREE.MeshBasicMaterial({ color: 0x4c8dff, wireframe: true, transparent: true, opacity: 0.12 });
+  const ico = new THREE.Mesh(icoGeo, icoMat);
+  ico.position.set(1.5, -0.5, -3);
+  scene.add(ico);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    points.rotation.y += 0.0006;
+    points.rotation.x += 0.0002;
+    ico.rotation.y += 0.0018;
+    ico.rotation.x += 0.0009;
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+})();
+
+// ---------------- App state ----------------
+// EDIT THIS after deploying the backend to Railway: replace with your gateway's
+// public URL (e.g. "https://payvault-gateway-production.up.railway.app").
+// Leave as-is for local testing against your IDE or Docker setup.
+const DEFAULT_API = "http://localhost:8080";
+
+// You can also override this without redeploying: open the site with
+// ?api=https://your-gateway-url once — it's remembered after that.
+const _urlParams = new URLSearchParams(location.search);
+const _apiOverride = _urlParams.get('api');
+if (_apiOverride) localStorage.setItem('pv_api', _apiOverride);
+const API = _apiOverride || localStorage.getItem('pv_api') || DEFAULT_API;
+
+let state = {
+  token: localStorage.getItem("pv_token") || null,
+  userId: localStorage.getItem("pv_userId") || null,
+  name: localStorage.getItem("pv_name") || null,
+  transferPreview: null,
+};
+
+function save() {
+  if (state.token) localStorage.setItem("pv_token", state.token);
+  if (state.userId) localStorage.setItem("pv_userId", state.userId);
+  if (state.name) localStorage.setItem("pv_name", state.name);
+}
+
+async function api(path, method = "GET", body = null, auth = true) {
+  const headers = { "Content-Type": "application/json" };
+  if (auth && state.token) headers["Authorization"] = "Bearer " + state.token;
+  const res = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : null });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || "Request failed");
+  return data;
+}
+
+function uuid() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+const app = () => document.getElementById("app");
+
+// ---------------- Shared UI fragments ----------------
+function brand() {
+  return `
+    <div class="flex items-center gap-3 mb-8 fade-up">
+      <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-400 to-sky-500 flex items-center justify-center font-extrabold text-zinc-950 text-lg shadow-lg shadow-emerald-500/20">P</div>
+      <div>
+        <div class="font-bold tracking-tight text-[15px]">PAYVAULT</div>
+        <div class="text-[11px] text-zinc-500">Fault-Tolerant Digital Wallet</div>
+      </div>
+    </div>`;
+}
+
+function card(inner, extra = "") {
+  return `<div class="rounded-3xl bg-zinc-900/70 backdrop-blur-xl border border-zinc-800/80 shadow-2xl shadow-black/40 p-6 fade-up ${extra}">${inner}</div>`;
+}
+
+function label(text) {
+  return `<label class="block text-[12px] font-medium text-zinc-400 mb-1.5 mt-4 first:mt-0">${text}</label>`;
+}
+
+function input(id, type, placeholder, value = "") {
+  return `<input id="${id}" type="${type}" placeholder="${placeholder}" value="${value}"
+    class="w-full rounded-xl bg-zinc-950/80 border border-zinc-800 px-4 py-3 text-[14px] text-zinc-100 placeholder-zinc-600
+           focus:outline-none focus:ring-2 focus:ring-emerald-400/40 focus:border-emerald-400/50 transition">`;
+}
+
+function btnPrimary(text, onclick) {
+  return `<button onclick="${onclick}" class="w-full mt-6 rounded-xl py-3.5 font-bold text-[14.5px] text-zinc-950
+    bg-gradient-to-r from-emerald-400 to-sky-400 hover:opacity-90 active:scale-[0.98] transition shadow-lg shadow-emerald-500/10">${text}</button>`;
+}
+
+function btnSecondary(text, onclick) {
+  return `<button onclick="${onclick}" class="w-full mt-3 rounded-xl py-3.5 font-semibold text-[14px] text-zinc-300
+    bg-zinc-800/60 border border-zinc-700/80 hover:bg-zinc-800 transition">${text}</button>`;
+}
+
+function msgBox(id = "msg") {
+  return `<div id="${id}"></div>`;
+}
+
+function showMsg(text, ok = false) {
+  const el = document.getElementById("msg");
+  if (!el) return;
+  el.innerHTML = `<div class="mt-4 text-[13px] px-4 py-2.5 rounded-xl border ${ok
+    ? 'bg-emerald-400/10 text-emerald-300 border-emerald-400/25'
+    : 'bg-rose-400/10 text-rose-300 border-rose-400/25'}">${text}</div>`;
+}
+
+const icon = {
+  send: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>`,
+  plus: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>`,
+  refresh: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>`,
+  history: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>`,
+  home: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`,
+};
+
+function navBar(active) {
+  const item = (key, ic, label, onclick) => `
+    <button onclick="${onclick}" class="flex flex-col items-center gap-1 py-2 px-4 rounded-xl transition
+      ${active===key ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-300'}">
+      ${ic}<span class="text-[10.5px] font-medium">${label}</span>
+    </button>`;
+  return `
+    <div class="fixed bottom-5 left-1/2 -translate-x-1/2 max-w-md w-[calc(100%-2.5rem)] z-20">
+      <div class="flex justify-around bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 rounded-2xl px-2 py-1 shadow-2xl shadow-black/50">
+        ${item('home', icon.home, 'Home', 'viewDashboard()')}
+        ${item('send', icon.send, 'Send', 'viewSendMoney()')}
+        ${item('history', icon.history, 'History', 'viewHistory()')}
+      </div>
+    </div>`;
+}
+
+function statusPill(status) {
+  const styles = {
+    SUCCESS: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20',
+    FAILED: 'bg-rose-400/10 text-rose-300 border-rose-400/20',
+    PENDING: 'bg-amber-400/10 text-amber-300 border-amber-400/20',
+  };
+  return `<span class="text-[10.5px] font-semibold px-2.5 py-1 rounded-full border ${styles[status] || styles.PENDING}">${status}</span>`;
+}
+
+// ---------------- Views ----------------
+function viewLogin() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Welcome back</h2>
+      <p class="text-zinc-500 text-[13px] mb-2">Log in to your PayVault account</p>
+      ${label('Email')}${input('email','email','you@example.com')}
+      ${label('Password')}${input('password','password','••••••••')}
+      ${msgBox()}
+      ${btnPrimary('Log in','doLogin()')}
+      <div class="text-center mt-5 text-[13px] text-zinc-500">New here?
+        <span class="text-emerald-400 font-semibold cursor-pointer hover:underline" onclick="viewRegister()">Create an account</span>
+      </div>
+    `)}
+  `;
+}
+
+async function doLogin() {
+  try {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    const data = await api("/api/users/login", "POST", { email, password }, false);
+    state.token = data.token; state.userId = data.userId; state.name = data.name;
+    save();
+    viewDashboard();
+  } catch (e) { showMsg(e.message); }
+}
+
+function viewRegister() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Create your account</h2>
+      <p class="text-zinc-500 text-[13px] mb-2">Takes less than a minute</p>
+      ${label('Full name')}${input('name','text','Priya Reddy')}
+      ${label('Email')}${input('email','email','you@example.com')}
+      ${label('Phone')}${input('phone','text','9876543210')}
+      ${label('Password')}${input('password','password','At least 6 characters')}
+      ${msgBox()}
+      ${btnPrimary('Register','doRegister()')}
+      <div class="text-center mt-5 text-[13px] text-zinc-500">Already have an account?
+        <span class="text-emerald-400 font-semibold cursor-pointer hover:underline" onclick="viewLogin()">Log in</span>
+      </div>
+    `)}
+  `;
+}
+
+async function doRegister() {
+  try {
+    const name = document.getElementById("name").value;
+    const email = document.getElementById("email").value;
+    const phone = document.getElementById("phone").value;
+    const password = document.getElementById("password").value;
+    await api("/api/users/register", "POST", { name, email, phone, password }, false);
+    const loginData = await api("/api/users/login", "POST", { email, password }, false);
+    state.token = loginData.token; state.userId = loginData.userId; state.name = loginData.name;
+    save();
+    const otp = await api("/api/users/otp/generate", "POST", { userId: state.userId, purpose: "REGISTRATION" }, false);
+    viewOtp(otp.devOtp);
+  } catch (e) { showMsg(e.message); }
+}
+
+function viewOtp(devOtp) {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Verify your account</h2>
+      <p class="text-zinc-500 text-[13px] mb-2">Dev mode — OTP is pre-filled below (no real SMS gateway)</p>
+      ${label('OTP code')}${input('otp','text','000000', devOtp || '')}
+      ${msgBox()}
+      ${btnPrimary('Verify','doVerifyOtp()')}
+    `)}
+  `;
+}
+
+async function doVerifyOtp() {
+  try {
+    const otpCode = document.getElementById("otp").value;
+    await api("/api/users/otp/verify", "POST", { userId: state.userId, otpCode, purpose: "REGISTRATION" }, false);
+    viewSetPin();
+  } catch (e) { showMsg(e.message); }
+}
+
+function viewSetPin() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Set a transaction PIN</h2>
+      <p class="text-zinc-500 text-[13px] mb-2">A second factor you'll enter every time you send money</p>
+      ${label('4-6 digit PIN')}${input('pin','password','••••')}
+      ${msgBox()}
+      ${btnPrimary('Save PIN & continue','doSetPin()')}
+    `)}
+  `;
+}
+
+async function doSetPin() {
+  try {
+    const pin = document.getElementById("pin").value;
+    await api(`/api/users/${state.userId}/pin`, "POST", { pin });
+    viewDashboard();
+  } catch (e) { showMsg(e.message); }
+}
+
+async function viewDashboard() {
+  app().innerHTML = `<div class="flex justify-center pt-20"><div class="w-9 h-9 rounded-full border-2 border-zinc-800 border-t-emerald-400 spin"></div></div>`;
+  try {
+    const balance = await api(`/api/wallets/${state.userId}/balance`);
+    const history = await api(`/api/transactions/${state.userId}/history`);
+    const recent = history.slice(0, 5);
+
+    app().innerHTML = `
+      ${brand()}
+      <p class="text-zinc-400 text-[14px] mb-1 fade-up">Good to see you, <span class="text-zinc-100 font-semibold">${state.name || 'there'}</span> 👋</p>
+      <div class="flex items-center gap-2 mb-4 fade-up">
+        <span class="text-zinc-500 text-[12.5px]">Your PayVault ID:</span>
+        <span class="text-[12.5px] font-mono font-semibold text-emerald-300 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-lg">#${state.userId}</span>
+        <button onclick="copyUserId()" id="copyBtn" class="text-[11px] text-zinc-500 hover:text-emerald-300 transition">Copy</button>
+      </div>
+
+      <div class="rounded-3xl bg-gradient-to-br from-zinc-900 via-zinc-900 to-emerald-950/40 border border-zinc-800 p-6 mb-5 relative overflow-hidden fade-up">
+        <div class="text-[11px] tracking-widest text-zinc-500 font-semibold">TOTAL BALANCE</div>
+        <div class="text-4xl font-extrabold mt-2 tracking-tight">₹${Number(balance.balance).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+        <div class="text-[12px] text-zinc-500 mt-2">${balance.currency} · Wallet secured</div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 mb-6 fade-up">
+        ${dashAction(icon.send, 'Send', 'viewSendMoney()')}
+        ${dashAction(icon.plus, 'Add Money', 'viewAddMoney()')}
+        ${dashAction(icon.refresh, 'Refresh', 'viewDashboard()')}
+      </div>
+
+      ${card(`
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-bold text-[15px]">Recent transactions</h2>
+          <span class="text-[12px] text-emerald-400 cursor-pointer hover:underline" onclick="viewHistory()">See all</span>
+        </div>
+        ${recent.length === 0 ? `<p class="text-zinc-500 text-[13px] py-2">No transactions yet</p>` : recent.map(t => txnRow(t)).join('')}
+      `)}
+
+      <div class="text-center mt-5 text-[12.5px] text-zinc-600 cursor-pointer hover:text-zinc-400" onclick="logout()">Log out</div>
+      ${navBar('home')}
+    `;
+  } catch (e) {
+    app().innerHTML = `${brand()}${card(`<p class="text-rose-300 text-[13px]">${e.message}</p>${btnSecondary('Retry','viewDashboard()')}`)}`;
+  }
+}
+
+function dashAction(ic, text, onclick) {
+  return `<button onclick="${onclick}" class="flex flex-col items-center gap-2 py-4 rounded-2xl bg-zinc-900/70 border border-zinc-800 hover:border-emerald-400/40 hover:bg-zinc-900 transition">
+    <div class="w-9 h-9 rounded-full bg-emerald-400/10 text-emerald-300 flex items-center justify-center">${ic}</div>
+    <span class="text-[11.5px] font-medium text-zinc-300">${text}</span>
+  </button>`;
+}
+
+function txnRow(t) {
+  const out = t.senderId == state.userId;
+  return `
+    <div class="flex items-center justify-between py-3 border-b border-zinc-800/70 last:border-0">
+      <div>
+        <div class="text-[13.5px] font-medium">${out ? 'To' : 'From'} user #${out ? t.receiverId : t.senderId}</div>
+        <div class="text-[11.5px] text-zinc-500 mt-0.5">${t.category || 'Other'}</div>
+      </div>
+      <div class="text-right">
+        <div class="text-[14px] font-semibold ${out ? 'text-rose-300' : 'text-emerald-300'}">${out ? '−' : '+'}₹${Number(t.amount).toLocaleString('en-IN')}</div>
+        <div class="mt-1">${statusPill(t.status)}</div>
+      </div>
+    </div>`;
+}
+
+function viewAddMoney() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Add Money</h2>
+      <p class="text-zinc-500 text-[13px] mb-2">Top up your wallet (simulated payment — no real gateway)</p>
+      ${label('Amount (₹)')}${input('amount','number','0')}
+      <div class="flex gap-2 mt-3">
+        ${['500','1000','2000','5000'].map(a => `<span onclick="document.getElementById('amount').value=${a}"
+          class="px-3.5 py-1.5 rounded-lg bg-zinc-800/70 border border-zinc-700 text-[12.5px] cursor-pointer hover:border-emerald-400/40">₹${a}</span>`).join('')}
+      </div>
+      ${label('Payment method')}
+      <select id="method" class="w-full rounded-xl bg-zinc-950/80 border border-zinc-800 px-4 py-3 text-[14px] text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-400/40">
+        <option value="UPI">UPI</option>
+        <option value="DEBIT_CARD">Debit Card</option>
+        <option value="BANK_TRANSFER">Bank Transfer</option>
+      </select>
+      ${msgBox()}
+      ${btnPrimary('Add Money','doAddMoney()')}
+      ${btnSecondary('Cancel','viewDashboard()')}
+    `)}
+  `;
+}
+
+async function doAddMoney() {
+  try {
+    const amount = parseFloat(document.getElementById("amount").value);
+    const paymentMethod = document.getElementById("method").value;
+    await api(`/api/wallets/${state.userId}/topup`, "POST", { amount, paymentMethod });
+    viewDashboard();
+  } catch (e) { showMsg(e.message); }
+}
+
+function viewSendMoney() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-1">Send Money</h2>
+      <p class="text-zinc-500 text-[13px] mb-1">Enter the recipient's PayVault user ID</p>
+      <p class="text-zinc-600 text-[11.5px] mb-2">Your own ID is <span class="font-mono text-emerald-400">#${state.userId}</span> — share it with others so they can pay you</p>
+      ${label('Receiver user ID')}${input('receiverId','number','e.g. 2')}
+      ${label('Amount (₹)')}${input('amount','number','0')}
+      <div class="flex gap-2 mt-3">
+        ${['500','1000','2000'].map(a => `<span onclick="document.getElementById('amount').value=${a}"
+          class="px-3.5 py-1.5 rounded-lg bg-zinc-800/70 border border-zinc-700 text-[12.5px] cursor-pointer hover:border-emerald-400/40">₹${a}</span>`).join('')}
+      </div>
+      ${label('Category')}
+      <select id="category" class="w-full rounded-xl bg-zinc-950/80 border border-zinc-800 px-4 py-3 text-[14px] text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-400/40">
+        <option>Transfers</option><option>Food & Dining</option><option>Shopping</option><option>Other</option>
+      </select>
+      ${msgBox()}
+      ${btnPrimary('Review Transfer','doValidateTransfer()')}
+      ${btnSecondary('Cancel','viewDashboard()')}
+    `)}
+    ${navBar('send')}
+  `;
+}
+
+async function doValidateTransfer() {
+  try {
+    const receiverId = parseInt(document.getElementById("receiverId").value);
+    const amount = parseFloat(document.getElementById("amount").value);
+    const category = document.getElementById("category").value;
+    const result = await api("/api/transactions/validate", "POST", { senderId: parseInt(state.userId), receiverId, amount });
+    if (!result.valid) { showMsg(result.message); return; }
+    state.transferPreview = { receiverId, amount, category };
+    viewReviewTransfer();
+  } catch (e) { showMsg(e.message); }
+}
+
+function viewReviewTransfer() {
+  const p = state.transferPreview;
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <h2 class="text-lg font-bold mb-4">Review Transfer</h2>
+      <div class="space-y-0 rounded-2xl bg-zinc-950/50 border border-zinc-800 divide-y divide-zinc-800/70 mb-1">
+        ${reviewRow('To', 'User #' + p.receiverId)}
+        ${reviewRow('Amount', '₹' + p.amount)}
+        ${reviewRow('Category', p.category)}
+      </div>
+      ${label('Enter your transaction PIN to confirm')}${input('pin','password','••••')}
+      ${msgBox()}
+      ${btnPrimary('Confirm & Send','doTransfer()')}
+      ${btnSecondary('Back','viewSendMoney()')}
+    `)}
+  `;
+}
+
+function reviewRow(k, v) {
+  return `<div class="flex justify-between px-4 py-3 text-[13.5px]"><span class="text-zinc-500">${k}</span><span class="font-medium">${v}</span></div>`;
+}
+
+async function doTransfer() {
+  const pin = document.getElementById("pin").value;
+  const p = state.transferPreview;
+  viewProcessing();
+  try {
+    const result = await api("/api/transactions/transfer", "POST", {
+      senderId: parseInt(state.userId), receiverId: p.receiverId, amount: p.amount,
+      category: p.category, pin, idempotencyKey: uuid(),
+    });
+    pollStatus(result.transactionId);
+  } catch (e) { viewResult(false, e.message); }
+}
+
+function viewProcessing() {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <div class="flex flex-col items-center text-center py-6">
+        <div class="w-12 h-12 rounded-full border-2 border-zinc-800 border-t-emerald-400 spin mb-5"></div>
+        <h2 class="text-lg font-bold">Processing your transfer…</h2>
+        <p class="text-zinc-500 text-[13px] mt-1">Debiting sender, crediting receiver, writing to the ledger</p>
+      </div>
+    `)}
+  `;
+}
+
+async function pollStatus(transactionId, attempts = 0) {
+  if (attempts > 15) { viewResult(false, "Taking longer than expected — check History shortly."); return; }
+  try {
+    const status = await api(`/api/transactions/${transactionId}/status`);
+    if (status.status === "PENDING") { setTimeout(() => pollStatus(transactionId, attempts + 1), 800); }
+    else { viewResult(status.status === "SUCCESS", status.status === "SUCCESS" ? "Transfer completed successfully" : "Transfer failed — sender was refunded"); }
+  } catch (e) { viewResult(false, e.message); }
+}
+
+function viewResult(success, message) {
+  app().innerHTML = `
+    ${brand()}
+    ${card(`
+      <div class="flex flex-col items-center text-center py-6">
+        <div class="w-14 h-14 rounded-full flex items-center justify-center mb-4 ${success ? 'bg-emerald-400/10' : 'bg-rose-400/10'}">
+          <span class="text-3xl">${success ? '✅' : '⚠️'}</span>
+        </div>
+        <h2 class="text-lg font-bold">${success ? 'Success' : 'Transfer Failed'}</h2>
+        <p class="text-zinc-500 text-[13px] mt-1 mb-2">${message}</p>
+        ${btnPrimary('Back to Dashboard','viewDashboard()')}
+      </div>
+    `)}
+  `;
+}
+
+async function viewHistory() {
+  app().innerHTML = `<div class="flex justify-center pt-20"><div class="w-9 h-9 rounded-full border-2 border-zinc-800 border-t-emerald-400 spin"></div></div>`;
+  try {
+    const history = await api(`/api/transactions/${state.userId}/history`);
+    app().innerHTML = `
+      ${brand()}
+      ${card(`
+        <h2 class="font-bold text-[15px] mb-3">Transaction History</h2>
+        ${history.length === 0 ? `<p class="text-zinc-500 text-[13px] py-2">No transactions yet</p>` : history.map(t => `
+          <div class="flex items-center justify-between py-3 border-b border-zinc-800/70 last:border-0">
+            <div>
+              <div class="text-[13.5px] font-medium">${t.senderId == state.userId ? 'To' : 'From'} user #${t.senderId == state.userId ? t.receiverId : t.senderId}</div>
+              <div class="text-[11.5px] text-zinc-500 mt-0.5">${new Date(t.createdAt).toLocaleString()} · ${t.category || 'Other'}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[14px] font-semibold">₹${Number(t.amount).toLocaleString('en-IN')}</div>
+              <div class="mt-1">${statusPill(t.status)}</div>
+            </div>
+          </div>`).join('')}
+      `)}
+      ${navBar('history')}
+    `;
+  } catch (e) {
+    app().innerHTML = `${brand()}${card(`<p class="text-rose-300 text-[13px]">${e.message}</p>`)}`;
+  }
+}
+
+function logout() {
+  localStorage.clear();
+  state = { token: null, userId: null, name: null };
+  viewLogin();
+}
+
+function copyUserId() {
+  navigator.clipboard.writeText(String(state.userId)).then(() => {
+    const btn = document.getElementById("copyBtn");
+    if (btn) { const old = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => btn.textContent = old, 1200); }
+  });
+}
+
+// ---------------- Boot ----------------
+if (state.token && state.userId) { viewDashboard(); } else { viewLogin(); }
+</script>
+</body>
+</html>

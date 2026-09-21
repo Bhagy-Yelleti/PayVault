@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${PGHOST}:${PGPORT}/${PGDATABASE}
+    username: ${PGUSER}
+    password: ${PGPASSWORD}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL}
+  instance:
+    hostname: ${RAILWAY_PRIVATE_DOMAIN:transaction-service.railway.internal}
+    prefer-ip-address: false

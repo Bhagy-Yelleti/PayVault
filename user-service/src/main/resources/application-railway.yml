@@ -1,0 +1,16 @@
+# Active when SPRING_PROFILES_ACTIVE=railway (set as a Railway environment variable).
+# Every ${VAR_NAME} below is a Railway environment variable you set in that service's
+# "Variables" tab — see the deployment instructions for exact values.
+spring:
+  datasource:
+    url: jdbc:postgresql://${PGHOST}:${PGPORT}/${PGDATABASE}
+    username: ${PGUSER}
+    password: ${PGPASSWORD}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL}
+  instance:
+    hostname: ${RAILWAY_PRIVATE_DOMAIN:user-service.railway.internal}
+    prefer-ip-address: false

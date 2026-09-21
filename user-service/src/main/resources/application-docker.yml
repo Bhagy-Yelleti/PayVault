@@ -1,0 +1,10 @@
+# Active only when SPRING_PROFILES_ACTIVE=docker (set in docker-compose.yml).
+# Overrides localhost hostnames with the container/service names on the Docker network.
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-user:5432/user_db
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka-server:8761/eureka/

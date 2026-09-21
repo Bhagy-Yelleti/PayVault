@@ -1,0 +1,7 @@
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL}
+  instance:
+    hostname: ${RAILWAY_PRIVATE_DOMAIN:api-gateway.railway.internal}
+    prefer-ip-address: false

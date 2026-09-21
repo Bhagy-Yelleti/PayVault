@@ -1,0 +1,44 @@
+# ===== Java / Maven =====
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# ===== Eclipse / STS =====
+.classpath
+.project
+.settings/
+.factorypath
+.springBeans
+.sts4-cache/
+
+# ===== IntelliJ =====
+.idea/
+*.iml
+
+# ===== VS Code =====
+.vscode/
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Environment files =====
+.env
+.env.*
+
+# ===== Maven Wrapper cache =====
+.mvn/wrapper/maven-wrapper.jar
+
+# ===== Build folders =====
+build/
+out/
+
+# ===== Node (if frontend gets Vite later) =====
+node_modules/
+dist/

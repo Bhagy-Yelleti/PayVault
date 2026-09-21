@@ -1,0 +1,155 @@
+version: "3.9"
+
+# Run the whole PayVault stack with: docker-compose up --build
+# Stop it with: docker-compose down
+# Wipe the databases too: docker-compose down -v
+
+services:
+
+  # ---------------- Databases ----------------
+  postgres-user:
+    image: postgres:16-alpine
+    container_name: postgres-user
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5433:5432"   # host:container — avoids clashing with a Postgres you may already have on 5432
+    volumes:
+      - pgdata-user:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [payvault-net]
+
+  postgres-wallet:
+    image: postgres:16-alpine
+    container_name: postgres-wallet
+    environment:
+      POSTGRES_DB: wallet_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata-wallet:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [payvault-net]
+
+  postgres-ledger:
+    image: postgres:16-alpine
+    container_name: postgres-ledger
+    environment:
+      POSTGRES_DB: ledger_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata-ledger:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [payvault-net]
+
+  # ---------------- Infrastructure ----------------
+  eureka-server:
+    build: ./eureka-server
+    container_name: eureka-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8761/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [payvault-net]
+
+  # ---------------- Business services ----------------
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    restart: on-failure
+    networks: [payvault-net]
+
+  wallet-service:
+    build: ./wallet-service
+    container_name: wallet-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      postgres-wallet:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    restart: on-failure
+    networks: [payvault-net]
+
+  transaction-service:
+    build: ./transaction-service
+    container_name: transaction-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+    ports:
+      - "8083:8083"
+    restart: on-failure
+    networks: [payvault-net]
+
+  # ---------------- Edge ----------------
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+      transaction-service:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    restart: on-failure
+    networks: [payvault-net]
+
+networks:
+  payvault-net:
+    driver: bridge
+
+volumes:
+  pgdata-user:
+  pgdata-wallet:
+  pgdata-ledger:
