@@ -734,6 +734,23 @@
       } else {
         viewLogin();
       }
+
+      // Make functions available to HTML onclick buttons
+      window.doLogin = doLogin;
+      window.viewRegister = viewRegister;
+      window.doRegister = doRegister;
+      window.doVerifyOtp = doVerifyOtp;
+      window.doSetPin = doSetPin;
+      window.viewDashboard = viewDashboard;
+      window.viewSendMoney = viewSendMoney;
+      window.viewAddMoney = viewAddMoney;
+      window.viewHistory = viewHistory;
+      window.doAddMoney = doAddMoney;
+      window.doValidateTransfer = doValidateTransfer;
+      window.viewReviewTransfer = viewReviewTransfer;
+      window.doTransfer = doTransfer;
+      window.logout = logout;
+      window.copyUserId = copyUserId;
     </script>
   </body>
 </html>
